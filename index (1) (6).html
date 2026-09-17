@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cart Camera</title>
+<script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #1a1d24;
+    --border: #2a2e38;
+    --text: #e6e8ec;
+    --muted: #9aa2af;
+    --accent: #3b82f6;
+    --good: #22c55e;
+    --bad: #ef4444;
+    --warn: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 12px;
+    max-width: 480px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 18px;
+    margin: 4px 0 12px;
+    text-align: center;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 12px;
+  }
+  .mode-toggle {
+    display: flex;
+    gap: 8px;
+  }
+  .mode-toggle button {
+    flex: 1;
+    padding: 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 14px;
+  }
+  .mode-toggle button.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+  video {
+    width: 100%;
+    border-radius: 8px;
+    background: #000;
+    display: block;
+  }
+  canvas { display: none; }
+  label {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+    margin: 8px 0 4px;
+  }
+  input[type="text"], input[type="password"], select {
+    width: 100%;
+    padding: 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: #11141a;
+    color: var(--text);
+    font-size: 14px;
+  }
+  button.action {
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: none;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+    font-size: 14px;
+    cursor: pointer;
+    margin-top: 8px;
+  }
+  button.action.secondary {
+    background: #2a2e38;
+    color: var(--text);
+  }
+  button.action.stop {
+    background: var(--bad);
+  }
+  button.action:disabled {
+    opacity: 0.5;
+  }
+  .row {
+    display: flex;
+    gap: 8px;
+  }
+  .row > * { flex: 1; }
+  .status {
+    font-size: 14px;
+    font-weight: 600;
+    padding: 10px;
+    border-radius: 8px;
+    background: #11141a;
+    border: 1px solid var(--border);
+    text-align: center;
+  }
+  .status.match { color: var(--good); border-color: var(--good); }
+  .status.mismatch { color: var(--bad); border-color: var(--bad); }
+  .status.busy { color: var(--warn); border-color: var(--warn); }
+  .demo-list {
+    margin-top: 8px;
+    font-size: 13px;
+  }
+  .demo-list-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .demo-list-item button {
+    background: none;
+    border: none;
+    color: var(--bad);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .hint {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 6px;
+    line-height: 1.4;
+  }
+  .hidden { display: none !important; }
+
+  #cropStage {
+    position: relative;
+    width: 100%;
+    overflow: hidden;
+    border-radius: 8px;
+    background: #000;
+    touch-action: none;
+  }
+  #stillCanvas {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  #cropRect {
+    position: absolute;
+    box-sizing: border-box;
+    border: 2px solid var(--accent);
+    background: rgba(59, 130, 246, 0.15);
+  }
+  .crop-handle {
+    position: absolute;
+    width: 22px;
+    height: 22px;
+    margin: -11px 0 0 -11px;
+    background: var(--accent);
+    border: 2px solid #fff;
+    border-radius: 50%;
+    touch-action: none;
+    cursor: grab;
+  }
+  .crop-handle[data-corner="tl"] { left: 0; top: 0; }
+  .crop-handle[data-corner="tr"] { left: 100%; top: 0; }
+  .crop-handle[data-corner="bl"] { left: 0; top: 100%; }
+  .crop-handle[data-corner="br"] { left: 100%; top: 100%; }
+  .hint.emphasis {
+    color: var(--warn);
+  }
+  #aiResponseText {
+    color: var(--text);
+    font-weight: 500;
+  }
+</style>
+</head>
+<body>
+
+<h1>Cart Camera</h1>
+
+<div class="panel mode-toggle">
+  <button id="btnDemo" class="active">Products</button>
+  <button id="btnLive">Live Mode</button>
+</div>
+
+<div class="panel" id="previewPanel">
+  <video id="preview" autoplay playsinline muted></video>
+  <canvas id="canvas"></canvas>
+</div>
+
+<!-- MANUAL CROP OVERLAY (reference capture only) -->
+<div class="panel hidden" id="cropOverlay">
+  <div class="hint emphasis" id="cropInstruction">Hold the product in your hand while capturing, the same way a customer would when placing it in the cart — this makes matching more reliable.</div>
+  <div id="cropStage">
+    <canvas id="stillCanvas"></canvas>
+    <div id="cropRect">
+      <div class="crop-handle" data-corner="tl"></div>
+      <div class="crop-handle" data-corner="tr"></div>
+      <div class="crop-handle" data-corner="bl"></div>
+      <div class="crop-handle" data-corner="br"></div>
+    </div>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <button class="action" id="btnConfirmCrop">✅ Confirm Crop</button>
+    <button class="action secondary" id="btnRetakeCrop">Retake</button>
+  </div>
+  <div class="hint">Drag the corner handles to frame hand + product together, trimming out background. Don't try to isolate the product alone - keep the hand in the crop so it matches how live verification frames will look.</div>
+</div>
+
+<div class="panel">
+  <div id="statusBox" class="status">Idle - waiting</div>
+</div>
+
+<!-- PRODUCTS (reference photo admin - persists in this browser's localStorage,
+     survives refresh/reopen, and is what Live Mode matches against by ID) -->
+<div id="demoPanel" class="panel">
+  <label>Add Product</label>
+  <div class="row">
+    <input type="text" id="demoNameInput" placeholder="Product name (e.g. Maggi Noodles)">
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <input type="text" id="demoIdInput" placeholder="Unique Product ID (same barcode as the main trolley app)">
+    <button type="button" class="action secondary" id="btnScanId" style="flex:0 0 auto;">📷 Scan</button>
+  </div>
+  <button class="action secondary" id="btnCaptureRef">Capture Reference Photos (3 angles)</button>
+  <div class="hint emphasis">📌 Hold the product in your hand while capturing, the same way a customer would when placing it in the cart - this makes matching more reliable.</div>
+  <div class="hint" id="captureHint">Captures 3 photos in sequence - you will be prompted to tilt/rotate the product slightly between each one, and you'll get a chance to crop out the background after each shot. Saved permanently in this browser (localStorage) - survives refresh/closing the page. Use the exact same Product ID here as the barcode on the main trolley app, so Live Mode can match the two up.</div>
+
+  <div class="demo-list" id="demoList"></div>
+
+  <label style="margin-top:14px;">Select Expected Product (for manual testing)</label>
+  <select id="expectedSelect"><option value="">-- none --</option></select>
+
+  <div class="row" style="margin-top:8px;">
+    <button class="action" id="btnStart">Start Verification</button>
+    <button class="action stop" id="btnStop" disabled>Stop</button>
+  </div>
+  <div class="hint">Manual test only - captures one live photo and compares it against the selected product's saved reference photos. Live Mode below does this automatically using the Product ID from the ESP32, this button is just for testing without the ESP32.</div>
+</div>
+
+<!-- LIVE MODE UI -->
+<div id="livePanel" class="panel hidden">
+  <div class="hint">Polling <code>http://192.168.4.1/getPendingScan</code> every ~500ms, expecting <code>{ "pendingProductId": "&lt;id&gt;" }</code> (or no pending field when nothing is waiting) - this id must match a Product ID saved in the Products tab above. When one arrives, one live photo is captured automatically and compared against that product's saved reference photos, and the verdict is POSTed back to <code>/reportPhotoCheck</code> as <code>{ productId, match, raw }</code>.</div>
+  <div class="hint" id="liveConnHint">Status: not yet polled.</div>
+</div>
+
+<!-- AI COMPARE SETTINGS (used in both Demo and Live mode) - moved down here,
+     out of the way of the camera preview + capture button, and collapsed by
+     default since it's a configure-once panel, not something you touch every
+     scan. -->
+<details class="panel" id="aiSettingsPanel">
+  <summary style="cursor:pointer;font-size:13px;color:var(--muted);font-weight:600;">⚙️ AI Compare Settings</summary>
+  <div style="margin-top:10px;">
+    <label style="margin-top:0;">AI Provider</label>
+    <select id="aiProvider">
+      <option value="gemini">Google (Gemini 3.6 Flash) - fastest</option>
+      <option value="openai">OpenAI (GPT-4o vision)</option>
+      <option value="anthropic">Anthropic (Claude vision)</option>
+      <option value="groq">Groq (Llama vision)</option>
+    </select>
+    <label style="margin-top:10px;">AI API Key</label>
+    <input type="password" id="aiApiKey" placeholder="Paste your API key here, or hardcode it in the code (see AI_API_KEY_DEFAULT)">
+    <label style="margin-top:10px;">Model (optional override)</label>
+    <input type="text" id="aiModel" placeholder="Leave blank to use the default model">
+    <div class="hint">The key typed here is only saved in this browser (localStorage) for convenience while testing, and is sent directly from this page to the AI provider on every comparison - it never goes through any other server. If you host this page publicly (e.g. GitHub Pages), remember that anyone who views the page source can see a key you hardcode into the code, and a key someone types into this box only lives in their own browser.</div>
+    <div class="hint" id="aiResponseHint" style="margin-top:8px;"><strong>Last AI response:</strong> <span id="aiResponseText">(none yet)</span></div>
+  </div>
+</details>
+
+<script>
+// ======================================================================
+// AI CONFIG - fill these in before deploying (or leave blank and use the
+// "AI Compare Settings" panel in the app UI instead - useful while testing,
+// since values typed there are saved per-browser and override these).
+// ======================================================================
+const AI_API_KEY_DEFAULT = '';        // <-- paste your Gemini/OpenAI/Anthropic/Groq API key here
+const AI_PROVIDER_DEFAULT = 'gemini'; // 'gemini' | 'openai' | 'anthropic' | 'groq'
+const AI_MODEL_DEFAULT = '';          // leave blank to use the provider's default model
+const OPENAI_DEFAULT_MODEL = 'gpt-4o-mini';
+const ANTHROPIC_DEFAULT_MODEL = 'claude-sonnet-5';
+const GROQ_DEFAULT_MODEL = 'llama-3.2-90b-vision-preview';
+const GEMINI_DEFAULT_MODEL = 'gemini-3.6-flash'; // fast + vision-capable; thinking disabled below for 2-3s replies
+
+// ---------------------------------------------------------------------
+// Shared config
+// ---------------------------------------------------------------------
+const REFS_PER_PRODUCT = 3; // number of angled reference photos captured per product
+const DEMO_STORAGE_KEY = 'cartCameraDemoProductsV3'; // bumped: products now also store a unique id
+const AI_SETTINGS_KEY = 'cartCameraAiSettings';
+const LIVE_POLL_INTERVAL_MS = 500;
+const ESP32_BASE = 'http://192.168.4.1';
+const MAX_IMAGE_DIM = 640; // downscale captured/cropped photos to keep API payloads small
+
+const video = document.getElementById('preview');
+const canvas = document.getElementById('canvas');
+const statusBox = document.getElementById('statusBox');
+
+let currentMode = 'demo'; // 'demo' | 'live'
+let currentAiAbortController = null;
+
+// ---------------------------------------------------------------------
+// Camera setup
+// ---------------------------------------------------------------------
+async function initCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment' },
+      audio: false
+    });
+    video.srcObject = stream;
+  } catch (err) {
+    setStatus('Camera access failed: ' + err.message, 'mismatch');
+  }
+}
+
+// ---------------------------------------------------------------------
+// Barcode scan (Product ID field) - reads directly off the same live
+// video stream already running for photo capture, no separate camera
+// request needed.
+// ---------------------------------------------------------------------
+const btnScanIdEl = document.getElementById('btnScanId');
+let idBarcodeReader = null;
+let idScanning = false;
+
+async function stopIdScan() {
+  const wasScanning = !!idBarcodeReader;
+  if (idBarcodeReader) { idBarcodeReader.reset(); idBarcodeReader = null; }
+  idScanning = false;
+  btnScanIdEl.textContent = '📷 Scan';
+  // ZXing's reset() stops the underlying camera stream entirely (not just its
+  // own scan loop), which is why the preview used to go black afterwards -
+  // restart the stream here so the rest of the page gets a live feed back.
+  if (wasScanning) await initCamera();
+}
+
+btnScanIdEl.addEventListener('click', () => {
+  if (idScanning) { stopIdScan(); setStatus('Scan cancelled', ''); return; }
+  if (!video.videoWidth) { setStatus('Camera not ready yet - wait a moment and try again', 'mismatch'); return; }
+  idScanning = true;
+  btnScanIdEl.textContent = 'Stop';
+  setStatus('Point camera at the barcode...', 'busy');
+  idBarcodeReader = new ZXing.BrowserMultiFormatReader();
+  idBarcodeReader.decodeFromVideoElement(video, (result, err) => {
+    if (result) {
+      document.getElementById('demoIdInput').value = result.getText();
+      stopIdScan();
+      setStatus('Barcode captured: ' + result.getText(), 'match');
+    }
+    // NotFoundException fires continuously while no barcode is in frame -
+    // that's expected, not an error, so it's silently ignored here.
+  });
+});
+
+// ---------------------------------------------------------------------
+// Image capture helpers (replace the old perceptual-hash functions - we
+// now keep actual photos and let the AI do the comparing)
+// ---------------------------------------------------------------------
+function captureLiveImage(videoEl) {
+  const sw = videoEl.videoWidth, sh = videoEl.videoHeight;
+  if (!sw || !sh) throw new Error('video not ready');
+  const scale = Math.min(1, MAX_IMAGE_DIM / Math.max(sw, sh));
+  const outW = Math.max(1, Math.round(sw * scale));
+  const outH = Math.max(1, Math.round(sh * scale));
+  const c = document.createElement('canvas');
+  c.width = outW; c.height = outH;
+  c.getContext('2d').drawImage(videoEl, 0, 0, outW, outH);
+  return c.toDataURL('image/jpeg', 0.85);
+}
+
+// Reference-capture-only variant: draws an explicit (manually-cropped) region
+// from a source canvas (the frozen still frame) into a resized output image.
+function computeImageDataURLFromRegion(sourceCanvas, sx, sy, sw, sh) {
+  const scale = Math.min(1, MAX_IMAGE_DIM / Math.max(sw, sh));
+  const outW = Math.max(1, Math.round(sw * scale));
+  const outH = Math.max(1, Math.round(sh * scale));
+  const c = document.createElement('canvas');
+  c.width = outW; c.height = outH;
+  c.getContext('2d').drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, outW, outH);
+  return c.toDataURL('image/jpeg', 0.85);
+}
+
+// ---------------------------------------------------------------------
+// Status / AI response UI helpers
+// ---------------------------------------------------------------------
+function setStatus(text, cls) {
+  statusBox.textContent = text;
+  statusBox.className = 'status' + (cls ? ' ' + cls : '');
+}
+
+function setAiResponseText(text) {
+  document.getElementById('aiResponseText').textContent = (text && text.trim()) ? text.trim() : '(none yet)';
+}
+
+// ---------------------------------------------------------------------
+// AI settings: load/save to localStorage, seeded from the CONFIG constants
+// ---------------------------------------------------------------------
+function loadAiSettings() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(AI_SETTINGS_KEY) || '{}'); } catch (e) { saved = {}; }
+  document.getElementById('aiProvider').value = saved.provider || AI_PROVIDER_DEFAULT;
+  document.getElementById('aiApiKey').value = (saved.apiKey !== undefined ? saved.apiKey : AI_API_KEY_DEFAULT);
+  document.getElementById('aiModel').value = (saved.model !== undefined ? saved.model : AI_MODEL_DEFAULT);
+}
+
+function saveAiSettings() {
+  localStorage.setItem(AI_SETTINGS_KEY, JSON.stringify({
+    provider: document.getElementById('aiProvider').value,
+    apiKey: document.getElementById('aiApiKey').value,
+    model: document.getElementById('aiModel').value
+  }));
+}
+
+['aiProvider', 'aiApiKey', 'aiModel'].forEach(id => {
+  const el = document.getElementById(id);
+  el.addEventListener('input', saveAiSettings);
+  el.addEventListener('change', saveAiSettings);
+});
+loadAiSettings();
+
+// ---------------------------------------------------------------------
+// AI comparison call - sends the reference photo(s) + one live photo to
+// the configured provider and asks a plain yes/no "same product?" question.
+// ---------------------------------------------------------------------
+const AI_COMPARE_PROMPT =
+  "You are comparing product photos for a smart-cart camera check. You will be shown one or more REFERENCE photos of a product, followed by one LIVE photo. Decide whether the LIVE photo shows the SAME physical product as the REFERENCE photos (same item, same packaging/label) - ignore differences in hand position, camera angle, lighting, or background. Reply with exactly one word first, either YES or NO, then optionally one short sentence explaining why.";
+
+function dataUrlToAnthropicImageBlock(dataUrl) {
+  const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/.exec(dataUrl || '');
+  if (!match) throw new Error('Invalid image data');
+  return { type: 'image', source: { type: 'base64', media_type: match[1], data: match[2] } };
+}
+
+function dataUrlToGeminiImagePart(dataUrl) {
+  const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/.exec(dataUrl || '');
+  if (!match) throw new Error('Invalid image data');
+  return { inline_data: { mime_type: match[1], data: match[2] } };
+}
+
+function parseVerdict(text) {
+  const clean = (text || '').trim();
+  const upper = clean.toUpperCase();
+  let isMatch = null;
+  if (upper.startsWith('YES')) isMatch = true;
+  else if (upper.startsWith('NO')) isMatch = false;
+  return { isMatch: isMatch, rawText: clean };
+}
+
+async function callAiCompare(referenceImages, liveImageDataUrl, signal) {
+  const provider = document.getElementById('aiProvider').value;
+  const apiKey = document.getElementById('aiApiKey').value.trim();
+  const modelOverride = document.getElementById('aiModel').value.trim();
+  if (!apiKey) throw new Error('Enter your AI API key first');
+  if (!referenceImages || !referenceImages.length) throw new Error('No reference photos to compare against');
+
+  if (provider === 'gemini') {
+    const model = modelOverride || GEMINI_DEFAULT_MODEL;
+    const parts = [{ text: 'REFERENCE photo(s) of the product:' }];
+    referenceImages.forEach(img => parts.push(dataUrlToGeminiImagePart(img)));
+    parts.push({ text: AI_COMPARE_PROMPT + ' Here is the LIVE photo:' });
+    parts.push(dataUrlToGeminiImagePart(liveImageDataUrl));
+
+    const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent';
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey
+      },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: parts }],
+        generationConfig: {
+          maxOutputTokens: 60,
+          // Thinking is ON by default on Gemini 3.x and adds several seconds of
+          // latency; killing it is what gets this down to ~2-3s responses.
+          thinkingConfig: { thinkingBudget: 0 }
+        }
+      }),
+      signal: signal
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error((data.error && data.error.message) || ('Gemini error ' + res.status));
+    const cand = data.candidates && data.candidates[0];
+    const text = cand && cand.content && cand.content.parts
+      ? cand.content.parts.map(p => p.text || '').join(' ')
+      : '';
+    return parseVerdict(text);
+  }
+  if (provider === 'anthropic') {
+    const content = [{ type: 'text', text: 'REFERENCE photo(s) of the product:' }];
+    referenceImages.forEach(img => content.push(dataUrlToAnthropicImageBlock(img)));
+    content.push({ type: 'text', text: AI_COMPARE_PROMPT + ' Here is the LIVE photo:' });
+    content.push(dataUrlToAnthropicImageBlock(liveImageDataUrl));
+
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: modelOverride || ANTHROPIC_DEFAULT_MODEL,
+        max_tokens: 60,
+        messages: [{ role: 'user', content: content }]
+      }),
+      signal: signal
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error((data.error && data.error.message) || ('Anthropic error ' + res.status));
+    const text = (data.content || []).map(b => b.text || '').join(' ');
+    return parseVerdict(text);
+  }
+if (provider === 'groq') {
+    const content = [{ type: 'text', text: 'REFERENCE photo(s) of the product:' }];
+    referenceImages.forEach(img => content.push({ type: 'image_url', image_url: { url: img } }));
+    content.push({ type: 'text', text: AI_COMPARE_PROMPT + ' Here is the LIVE photo:' });
+    content.push({ type: 'image_url', image_url: { url: liveImageDataUrl } });
+
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + apiKey
+      },
+      body: JSON.stringify({
+        model: modelOverride || GROQ_DEFAULT_MODEL,
+        messages: [{ role: 'user', content: content }],
+        max_tokens: 60
+      }),
+      signal: signal
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error((data.error && data.error.message) || ('Groq error ' + res.status));
+    const text = data.choices && data.choices[0] && data.choices[0].message ? data.choices[0].message.content : '';
+    return parseVerdict(text);
+  }
+  // default: OpenAI-compatible chat completions API
+  const content = [{ type: 'text', text: 'REFERENCE photo(s) of the product:' }];
+  referenceImages.forEach(img => content.push({ type: 'image_url', image_url: { url: img } }));
+  content.push({ type: 'text', text: AI_COMPARE_PROMPT + ' Here is the LIVE photo:' });
+  content.push({ type: 'image_url', image_url: { url: liveImageDataUrl } });
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + apiKey
+    },
+    body: JSON.stringify({
+      model: modelOverride || OPENAI_DEFAULT_MODEL,
+      messages: [{ role: 'user', content: content }],
+      max_tokens: 60
+    }),
+    signal: signal
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error((data.error && data.error.message) || ('OpenAI error ' + res.status));
+  const text = data.choices && data.choices[0] && data.choices[0].message ? data.choices[0].message.content : '';
+  return parseVerdict(text);
+}
+
+// =======================================================================
+// MANUAL CROP TOOL (reference capture only - NOT used for live verification
+// frames, which are captured full-frame via captureLiveImage())
+// =======================================================================
+const previewPanelEl = document.getElementById('previewPanel');
+const cropOverlayEl = document.getElementById('cropOverlay');
+const cropStageEl = document.getElementById('cropStage');
+const stillCanvasEl = document.getElementById('stillCanvas');
+const cropRectEl = document.getElementById('cropRect');
+const btnCaptureRefEl = document.getElementById('btnCaptureRef');
+
+const MIN_CROP_SIZE = 24; // px, in displayed-stage coordinates
+
+// rect is stored in CSS-pixel coordinates relative to #cropStage (i.e. the
+// displayed/scaled size, not the still canvas's native pixel dimensions).
+let cropState = null; // { rect: {left, top, width, height} } | null
+
+function beginCropForFrame(videoEl) {
+  const sw = videoEl.videoWidth, sh = videoEl.videoHeight;
+  if (!sw || !sh) throw new Error('video not ready');
+
+  // Draw the full native-resolution frame into the visible still canvas -
+  // this is the frozen image the crop rectangle sits on top of.
+  stillCanvasEl.width = sw;
+  stillCanvasEl.height = sh;
+  stillCanvasEl.getContext('2d').drawImage(videoEl, 0, 0, sw, sh);
+
+  previewPanelEl.classList.add('hidden');
+  cropOverlayEl.classList.remove('hidden');
+  btnCaptureRefEl.disabled = true;
+
+  // Wait a frame so the stage has been laid out at its final on-screen size
+  // before we compute the default center-70% rect against it.
+  requestAnimationFrame(() => {
+    const stageW = cropStageEl.offsetWidth;
+    const stageH = cropStageEl.offsetHeight;
+    const w = stageW * 0.7, h = stageH * 0.7;
+    cropState = { rect: { left: (stageW - w) / 2, top: (stageH - h) / 2, width: w, height: h } };
+    renderCropRect();
+  });
+}
+
+function renderCropRect() {
+  if (!cropState) return;
+  const r = cropState.rect;
+  cropRectEl.style.left = r.left + 'px';
+  cropRectEl.style.top = r.top + 'px';
+  cropRectEl.style.width = r.width + 'px';
+  cropRectEl.style.height = r.height + 'px';
+}
+
+function clampRect(r, stageW, stageH) {
+  r.left = Math.max(0, Math.min(r.left, stageW - MIN_CROP_SIZE));
+  r.top = Math.max(0, Math.min(r.top, stageH - MIN_CROP_SIZE));
+  r.width = Math.max(MIN_CROP_SIZE, Math.min(r.width, stageW - r.left));
+  r.height = Math.max(MIN_CROP_SIZE, Math.min(r.height, stageH - r.top));
+  return r;
+}
+
+// ---- corner-handle dragging ----
+let activeDrag = null;
+
+function getStagePoint(evt) {
+  const stageRect = cropStageEl.getBoundingClientRect();
+  return { x: evt.clientX - stageRect.left, y: evt.clientY - stageRect.top };
+}
+
+document.querySelectorAll('.crop-handle').forEach(handle => {
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    activeDrag = {
+      corner: handle.dataset.corner,
+      startPoint: getStagePoint(e),
+      startRect: Object.assign({}, cropState.rect)
+    };
+  });
+});
+
+cropStageEl.addEventListener('pointermove', (e) => {
+  if (!activeDrag || !cropState) return;
+  const p = getStagePoint(e);
+  const dx = p.x - activeDrag.startPoint.x;
+  const dy = p.y - activeDrag.startPoint.y;
+  const sr = activeDrag.startRect;
+  const stageW = cropStageEl.offsetWidth;
+  const stageH = cropStageEl.offsetHeight;
+  let r = { left: sr.left, top: sr.top, width: sr.width, height: sr.height };
+
+  if (activeDrag.corner === 'tl') {
+    r.left = sr.left + dx; r.top = sr.top + dy;
+    r.width = sr.width - dx; r.height = sr.height - dy;
+  } else if (activeDrag.corner === 'tr') {
+    r.top = sr.top + dy;
+    r.width = sr.width + dx; r.height = sr.height - dy;
+  } else if (activeDrag.corner === 'bl') {
+    r.left = sr.left + dx;
+    r.width = sr.width - dx; r.height = sr.height + dy;
+  } else if (activeDrag.corner === 'br') {
+    r.width = sr.width + dx; r.height = sr.height + dy;
+  }
+
+  cropState.rect = clampRect(r, stageW, stageH);
+  renderCropRect();
+});
+
+['pointerup', 'pointercancel'].forEach(evt => {
+  cropStageEl.addEventListener(evt, () => { activeDrag = null; });
+  document.addEventListener(evt, () => { activeDrag = null; });
+});
+
+// ---- crop -> data URL, mapping displayed stage coords to native canvas pixels ----
+function getCroppedImageDataUrl() {
+  const stageW = cropStageEl.offsetWidth;
+  const stageH = cropStageEl.offsetHeight;
+  const scaleX = stillCanvasEl.width / stageW;
+  const scaleY = stillCanvasEl.height / stageH;
+  const r = cropState.rect;
+  return computeImageDataURLFromRegion(
+    stillCanvasEl,
+    r.left * scaleX, r.top * scaleY,
+    r.width * scaleX, r.height * scaleY
+  );
+}
+
+// ---- promise wrapper so capture-flow can "await" a crop ----
+let cropResolve = null;
+
+function requestCrop(videoEl) {
+  return new Promise((resolve) => {
+    cropResolve = resolve;
+    beginCropForFrame(videoEl);
+  });
+}
+
+document.getElementById('btnConfirmCrop').addEventListener('click', () => {
+  const dataUrl = getCroppedImageDataUrl();
+  cropOverlayEl.classList.add('hidden');
+  previewPanelEl.classList.remove('hidden');
+  btnCaptureRefEl.disabled = false;
+  const resolve = cropResolve;
+  cropResolve = null;
+  if (resolve) resolve(dataUrl);
+});
+
+document.getElementById('btnRetakeCrop').addEventListener('click', () => {
+  beginCropForFrame(video); // redraw current frame, same pending crop stays open
+});
+
+// =======================================================================
+// DEMO MODE - product storage + reference capture flow
+// =======================================================================
+let demoProducts = [];
+
+function loadDemoProducts() {
+  try { demoProducts = JSON.parse(localStorage.getItem(DEMO_STORAGE_KEY) || '[]'); }
+  catch (e) { demoProducts = []; }
+  renderDemoList();
+  renderExpectedSelect();
+}
+
+function saveDemoProducts() {
+  localStorage.setItem(DEMO_STORAGE_KEY, JSON.stringify(demoProducts));
+}
+
+function renderDemoList() {
+  const listEl = document.getElementById('demoList');
+  listEl.innerHTML = '';
+  demoProducts.forEach((p, idx) => {
+    const row = document.createElement('div');
+    row.className = 'demo-list-item';
+    const label = document.createElement('span');
+    label.textContent = p.name + ' [ID: ' + p.id + '] (' + p.images.length + ' photos)';
+    const delBtn = document.createElement('button');
+    delBtn.textContent = 'Delete';
+    delBtn.addEventListener('click', () => {
+      demoProducts.splice(idx, 1);
+      saveDemoProducts();
+      renderDemoList();
+      renderExpectedSelect();
+    });
+    row.appendChild(label);
+    row.appendChild(delBtn);
+    listEl.appendChild(row);
+  });
+}
+
+function findProductById(id) {
+  const needle = String(id || '').trim().toLowerCase();
+  if (!needle) return null;
+  return demoProducts.find(p => String(p.id || '').trim().toLowerCase() === needle) || null;
+}
+
+function renderExpectedSelect() {
+  const sel = document.getElementById('expectedSelect');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">-- none --</option>';
+  demoProducts.forEach((p, idx) => {
+    const opt = document.createElement('option');
+    opt.value = String(idx);
+    opt.textContent = p.name + ' [' + p.id + ']';
+    sel.appendChild(opt);
+  });
+  if (prev && demoProducts[Number(prev)]) sel.value = prev;
+}
+
+document.getElementById('btnCaptureRef').addEventListener('click', async () => {
+  const name = document.getElementById('demoNameInput').value.trim();
+  const id = document.getElementById('demoIdInput').value.trim();
+  if (!name) { setStatus('Enter a product name first', 'mismatch'); return; }
+  if (!id) { setStatus('Enter a unique Product ID first (same as the barcode on the main app)', 'mismatch'); return; }
+  if (findProductById(id)) { setStatus('A product with this ID already exists - use a different ID or delete the old one first', 'mismatch'); return; }
+
+  stopIdScan();
+  btnCaptureRefEl.disabled = true;
+  const images = [];
+  const angleHints = [
+    'Photo 1 of 3 - hold product normally, front facing camera',
+    'Photo 2 of 3 - tilt/rotate the product slightly and hold again',
+    'Photo 3 of 3 - tilt/rotate a bit more, different angle, and hold again'
+  ];
+
+  for (let i = 0; i < REFS_PER_PRODUCT; i++) {
+    setStatus(angleHints[i], 'busy');
+    document.getElementById('cropInstruction').textContent =
+      angleHints[i] + '. Hold the product in your hand while capturing.';
+    await new Promise(r => setTimeout(r, 400));
+    const dataUrl = await requestCrop(video);
+    images.push(dataUrl);
+  }
+
+  demoProducts.push({ id: id, name: name, images: images });
+  saveDemoProducts();
+  renderDemoList();
+  renderExpectedSelect();
+  document.getElementById('demoNameInput').value = '';
+  document.getElementById('demoIdInput').value = '';
+  btnCaptureRefEl.disabled = false;
+  setStatus('Saved ' + REFS_PER_PRODUCT + ' reference photos for "' + name + '" [ID: ' + id + ']', 'match');
+});
+
+// ---- Start/Stop verification (Demo mode) ----
+const btnStart = document.getElementById('btnStart');
+const btnStop = document.getElementById('btnStop');
+
+btnStart.addEventListener('click', async () => {
+  const sel = document.getElementById('expectedSelect');
+  const idx = sel.value;
+  if (idx === '') { setStatus('Select an expected product first', 'mismatch'); return; }
+  const product = demoProducts[Number(idx)];
+  if (!product || !product.images.length) { setStatus('That product has no reference photos', 'mismatch'); return; }
+
+  btnStart.disabled = true;
+  btnStop.disabled = false;
+  currentAiAbortController = new AbortController();
+
+  try {
+    setStatus('Capturing live photo...', 'busy');
+    const liveImg = captureLiveImage(video);
+    setStatus('Asking AI to compare...', 'busy');
+    const verdict = await callAiCompare(product.images, liveImg, currentAiAbortController.signal);
+    setAiResponseText(verdict.rawText);
+    if (verdict.isMatch === true) setStatus('✅ Match - ' + product.name, 'match');
+    else if (verdict.isMatch === false) setStatus('❌ Mismatch - expected ' + product.name, 'mismatch');
+    else setStatus('⚠️ AI reply unclear, check "Last AI response" above', 'mismatch');
+  } catch (err) {
+    setAiResponseText(err.message);
+    setStatus('AI compare failed: ' + err.message, 'mismatch');
+  } finally {
+    btnStart.disabled = false;
+    btnStop.disabled = true;
+    currentAiAbortController = null;
+  }
+});
+
+btnStop.addEventListener('click', () => {
+  if (currentAiAbortController) currentAiAbortController.abort();
+  btnStart.disabled = false;
+  btnStop.disabled = true;
+  setStatus('Stopped', '');
+});
+
+// =======================================================================
+// LIVE MODE - poll ESP32 for a pending scan, auto-capture + AI compare
+// =======================================================================
+let livePollTimer = null;
+let liveBusy = false;
+
+async function livePollTick() {
+  if (currentMode !== 'live' || liveBusy) return;
+  try {
+    const res = await fetch(ESP32_BASE + '/getPendingScan', { cache: 'no-store' });
+    const data = await res.json();
+    document.getElementById('liveConnHint').textContent =
+      'Status: polling OK, last check ' + new Date().toLocaleTimeString();
+
+    if (data && data.pendingProductId) {
+      liveBusy = true;
+      const productId = data.pendingProductId;
+      const product = findProductById(productId);
+
+      if (!product) {
+        setStatus('⚠️ Unknown Product ID from ESP32: "' + productId + '" - add its reference photos in the Products tab', 'mismatch');
+        try {
+          await fetch(ESP32_BASE + '/reportPhotoCheck', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ productId: productId, match: null, raw: 'No reference photos saved for this Product ID' })
+          });
+        } catch (e) {}
+        liveBusy = false;
+        return;
+      }
+
+      setStatus('Pending scan for "' + product.name + '" - capturing + comparing...', 'busy');
+      try {
+        const liveImg = captureLiveImage(video);
+        const verdict = await callAiCompare(product.images, liveImg);
+        setAiResponseText(verdict.rawText);
+
+        if (verdict.isMatch === true) setStatus('✅ Match - ' + product.name, 'match');
+        else if (verdict.isMatch === false) setStatus('❌ Mismatch - expected ' + product.name, 'mismatch');
+        else setStatus('⚠️ AI reply unclear', 'mismatch');
+
+        await fetch(ESP32_BASE + '/reportPhotoCheck', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ productId: productId, match: verdict.isMatch, raw: verdict.rawText })
+        });
+      } catch (err) {
+        setAiResponseText(err.message);
+        setStatus('AI compare failed: ' + err.message, 'mismatch');
+      } finally {
+        liveBusy = false;
+      }
+    }
+  } catch (err) {
+    document.getElementById('liveConnHint').textContent = 'Status: poll failed - ' + err.message;
+  }
+}
+
+function startLivePolling() {
+  stopLivePolling();
+  livePollTimer = setInterval(livePollTick, LIVE_POLL_INTERVAL_MS);
+}
+function stopLivePolling() {
+  if (livePollTimer) clearInterval(livePollTimer);
+  livePollTimer = null;
+}
+
+// =======================================================================
+// Mode toggle + init
+// =======================================================================
+const btnDemo = document.getElementById('btnDemo');
+const btnLive = document.getElementById('btnLive');
+const demoPanel = document.getElementById('demoPanel');
+const livePanel = document.getElementById('livePanel');
+
+function setMode(mode) {
+  currentMode = mode;
+  btnDemo.classList.toggle('active', mode === 'demo');
+  btnLive.classList.toggle('active', mode === 'live');
+  demoPanel.classList.toggle('hidden', mode !== 'demo');
+  livePanel.classList.toggle('hidden', mode !== 'live');
+  if (mode !== 'demo') stopIdScan();
+  if (mode === 'live') startLivePolling(); else stopLivePolling();
+}
+
+btnDemo.addEventListener('click', () => setMode('demo'));
+btnLive.addEventListener('click', () => setMode('live'));
+
+loadDemoProducts();
+setMode('demo');
+initCamera();
+</script>
+</body>
+</html>
